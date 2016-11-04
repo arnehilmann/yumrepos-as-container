@@ -1,0 +1,33 @@
+#!/bin/bash
+set -e -E -u
+
+SITE_DIR=/usr/lib/python2.7/site-packages/yumrepos
+CRED_FILE=yumrepos.credentials
+TOPLEVEL_RPM=yumrepos-behind-nginx-on-centos7
+
+trap 'EC=$?; echo "ERROR! exit code $EC"; exit $EC' ERR
+
+echo "installing official rpms"
+rm -f $SITE_DIR
+yum install -y $TOPLEVEL_RPM || yum reinstall -y $TOPLEVEL_RPM
+
+echo "linking local /source dir as yumrepos"
+rm -rf $SITE_DIR && ln -sf /project/yumrepos/src/main/python/yumrepos/ $SITE_DIR
+ls -al $SITE_DIR
+
+echo "enable autoreload on uwsgi"
+sed -i '/^ExecStart/{/--py-autoreload 1/! s/$/ --py-autoreload 1/}' /usr/lib/systemd/system/yumrepos-admin.service
+systemctl daemon-reload
+systemctl restart yumrepos-admin
+
+if curl -sI -k -K yumrepos.credentials https://localhost/admin/v1/ready | head -n 1 | grep -v 204; then
+    echo "$CRED_FILE contains no valid key/secret, recreating it"
+    rm -f $CRED_FILE
+    KEY_CMD=$(generate-yumrepos-key-pair 2> /dev/null | grep "user=" | sed "s/^\. *//;s/ > .*$//;s/'//g")
+    $KEY_CMD > $CRED_FILE
+fi
+
+echo "check if yumrepos-admin is ready"
+curl -si -k -K $CRED_FILE https://localhost/admin/v1/ready | head -n 1 | grep 204
+
+echo "successfully switched to dev mode, using local /project dirs"
